@@ -2,6 +2,12 @@
 
 **Zeuz** is a factory: from an idea it births a complete agentic workflow system of the Femida/Mnemozina class. It runs the spec through six inventor-masters (Russian scientists, role = character) and bakes a constitution into every system it produces.
 
+## Why
+
+Building a multi-agent system by hand is slow and easy to get wrong: one step skips the gate before an irreversible action, another burns tokens where Haiku would do, a third leaves a hole in coverage. Zeuz takes that off your plate. You bring an idea — it interrogates it into a full spec, casts the roles, draws the architecture with gates, budgets the tokens, writes the files, and tests the result before handoff. What you get is a working system under one constitution, not a pile of loose prompts.
+
+Who it's for: anyone building not a single workflow but a family of them, who wants every new system born to the same standard — observability, replay, and control over irreversible actions baked in.
+
 ## Flow
 
 ```

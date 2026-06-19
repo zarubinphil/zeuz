@@ -13,16 +13,23 @@ export const meta = {
 }
 
 const A = typeof args === 'string' ? args : (args ? JSON.stringify(args, null, 2) : '')
-const CONST = '/Users/fil/Проекты/zeuz/rules/best-practices.md'
+// ponytail: пути от $HOME, не захардкожены — портативно + без утечки username в публичный репо.
+// Переопределяй раскладку через env ZEUZ_HOME / ZEUZ_PROJECTS, иначе дефолт ~/Проекты.
+const HOME = (typeof process !== 'undefined' && process.env && process.env.HOME) || '.'
+const ZEUZ_HOME = (typeof process !== 'undefined' && process.env && process.env.ZEUZ_HOME) || (HOME + '/Проекты/zeuz')
+const PROJECTS = (typeof process !== 'undefined' && process.env && process.env.ZEUZ_PROJECTS) || (HOME + '/Проекты')
+const CONST = ZEUZ_HOME + '/rules/best-practices.md'
 const SAMPLES = 'Образцы: ~/Полезные знания/99 Система/Протокол_Мнемозина.md · ~/Desktop/Протокол_Фемида.md'
-const ABTOP = '/Users/fil/.cargo/bin/abtop'
-const RUN_ID = 'zeuz-' + new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)
-const OBS_LOG = '/Users/fil/Проекты/zeuz/runs/_observability.jsonl'
+const ABTOP = HOME + '/.cargo/bin/abtop'
+// new Date()/Date.now() запрещены в workflow-скриптах (ломают resume). RUN_ID — дет. хэш спеки: уникален per-бренд, стабилен для resume.
+const __hash = (s) => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(36) }
+const RUN_ID = 'zeuz-' + __hash(typeof args === 'string' ? args : JSON.stringify(args || ''))
+const OBS_LOG = ZEUZ_HOME + '/runs/_observability.jsonl'
 
 const observeRun = async function (label) {
   return await agent(
     'Run Observatory для Зевса. Выполни bash без TTY, не падай если abtop недоступен:\n' +
-    'mkdir -p /Users/fil/Проекты/zeuz/runs; OUT=$([ -x "' + ABTOP + '" ] && "' + ABTOP + '" --once 2>&1 || echo "abtop_unavailable"); ' +
+    'mkdir -p "' + ZEUZ_HOME + '/runs"; OUT=$([ -x "' + ABTOP + '" ] && "' + ABTOP + '" --once 2>&1 || echo "abtop_unavailable"); ' +
     'CTX=$(printf "%s" "$OUT" | grep -Eo "CTX: *[0-9]+%" | head -1 | grep -Eo "[0-9]+" || true); ' +
     'TOK=$(printf "%s" "$OUT" | grep -Eo "Tok:[^ ]+" | head -1 | cut -d: -f2 || true); ' +
     'printf \'{"ts":"%s","run_id":"' + RUN_ID + '","phase":"' + label + '","ctx_percent":"%s","tokens":"%s","raw":%s}\\n\' "$(date -u +%FT%TZ)" "$CTX" "$TOK" "$(printf "%s" "$OUT" | python3 -c "import json,sys; print(json.dumps(sys.stdin.read()[:4000]))")" >> "' + OBS_LOG + '"; ' +
@@ -37,8 +44,14 @@ if (!A || A.trim().length < 20) {
 
 phase('Observe')
 const observeStart = await observeRun('start')
+// CTX-гейт фабрики измеряет ГЛАВНЫЙ чат, но мастера работают в ИЗОЛИРОВАННЫХ субагентах — их контекст свой.
+// Высокий CTX главного чата блокирует только финальное чтение результата человеком, не постройку. → WARN, не STOP.
+// Жёсткий STOP только при явном CTX_HARD_STOP в спеке.
+if (String(observeStart).indexOf('STOP_CTX_90') !== -1 && A.indexOf('CTX_HARD_STOP') !== -1) {
+  return { error: 'ctx_too_high', run_id: RUN_ID, message: 'CTX >= 90% + CTX_HARD_STOP. Новый чат/сжатие.', observability_log: OBS_LOG }
+}
 if (String(observeStart).indexOf('STOP_CTX_90') !== -1) {
-  return { error: 'ctx_too_high', run_id: RUN_ID, message: 'CTX >= 90%. Новый чат/сжатие перед запуском фабрики Зевс.', observability_log: OBS_LOG }
+  log('WARN: CTX>=90% в главном чате. Мастера изолированы, продолжаю; результат читать в свежем чате если контекст переполнен.')
 }
 
 // ---------- 1. Марков — кастинг душ ----------
@@ -46,12 +59,13 @@ phase('Cast')
 const cast = await agent(
   'Ты — МАРКОВ, Кастинг душ фабрики Зевс. Прочитай конституцию ' + CONST + '.\n\nСПЕКА новой системы:\n' + A + '\n\n' +
   'Определи роли системы (census/триаж/процессор/сверка/архив/надзиратель — или иные под домен) и подбери под КАЖДУЮ реального русского учёного-ИЗОБРЕТАТЕЛЯ (создал новое), чья жизнь-метафора = функция. ВЕРИФИЦИРУЙ годы+вклад по web (Firecrawl→sgai→WebSearch). НЕ повторяй занятых (Фемида-юристы; Мнемозина: Кирилов/Сопиков/Ломоносов/Менделеев/Калачов; Зевс: Лобачевский/Шухов/Котельников/Марков/Лебедев/Зворыкин). Не выдумывай даты.\n' +
-  'Верни JSON: { "system_name", "roles":[{"role","name","dates","invention","metaphor","model"}] }',
+  'ИМЕНОВАНИЕ: system_name = дисплей-имя (можно кириллицей, напр. «Аполлон»). system_slug = латинский kebab для папки/файлов проекта (напр. apollon). Правило S→Z применяется ТОЛЬКО к имени системы (Zeus→Zeuz), НЕ к именам агентов. Для КАЖДОЙ роли верни name_slug — латинская фамилия учёного (напр. lebedev, shukhov) для имени файла агента; кириллица допустима только внутри души.\n' +
+  'Верни JSON: { "system_name", "system_slug", "roles":[{"role","name","name_slug","dates","invention","metaphor","model"}] }',
   { label: 'cast', phase: 'Cast', agentType: 'general-purpose', model: 'sonnet', schema: {
-    type: 'object', required: ['system_name', 'roles'], properties: {
-      system_name: { type: 'string' },
-      roles: { type: 'array', items: { type: 'object', required: ['role', 'name', 'dates', 'metaphor'], properties: {
-        role: { type: 'string' }, name: { type: 'string' }, dates: { type: 'string' },
+    type: 'object', required: ['system_name', 'system_slug', 'roles'], properties: {
+      system_name: { type: 'string' }, system_slug: { type: 'string' },
+      roles: { type: 'array', items: { type: 'object', required: ['role', 'name', 'name_slug', 'dates', 'metaphor'], properties: {
+        role: { type: 'string' }, name: { type: 'string' }, name_slug: { type: 'string' }, dates: { type: 'string' },
         invention: { type: 'string' }, metaphor: { type: 'string' }, model: { type: 'string' } } } } } }
 })
 
@@ -83,12 +97,14 @@ const econ = await agent(
 // ---------- 4. Лебедев — постройка файлов ----------
 phase('Build')
 const sysName = cast.system_name || 'НоваяСистема'
-const targetDir = '/Users/fil/Desktop/' + sysName
+// system_slug — латиница kebab; S→Z применяется ТОЛЬКО к имени системы (Zeus→Zeuz). Папка проекта в ~/Проекты/, не на Desktop.
+const sysSlug = (cast.system_slug || 'new-system').toLowerCase().replace(/s/g, 'z').replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+const targetDir = PROJECTS + '/' + sysSlug
 const planDag = {
   run_id: RUN_ID,
   kind: 'zeuz-factory',
   system_name: sysName,
-  created_at: new Date().toISOString(),
+  created_at: RUN_ID, // дет.: реальная метка времени штампится bash (date -u) при записи артефактов
   stages: arch.stages || [],
   gates: arch.gates || [],
   model_map: econ.model_map || [],
@@ -102,11 +118,12 @@ await agent(
 const build = await agent(
   'Ты — ЛЕБЕДЕВ, Строитель фабрики Зевс. Конституция (СОБЛЮДАЙ строго): ' + CONST + '. ' + SAMPLES + '\n\n' +
   'СПЕКА:\n' + A + '\nРОЛИ:\n' + JSON.stringify(cast.roles) + '\nАРХИТЕКТУРА:\n' + JSON.stringify(arch) + '\nТОКЕНЫ+МОДЕЛИ:\n' + JSON.stringify(econ) + '\n\n' +
-  'Создай систему "' + sysName + '" в папке ' + targetDir + '/ (mkdir -p targetDir/агенты). Напиши РАБОЧИЕ файлы:\n' +
-  '1. агенты/*.md — души по формату (личность+метафора+Делает/Не-делает/Характер+правила+модель/скиллы/MCP), персоны из РОЛЕЙ.\n' +
-  '2. ' + sysName + '-pipeline.js — workflow с ДЕТЕРМИНИРОВАННЫМИ воротами (args парсить typeof-string; ворота = JS-сверка списков не суждение; форс пропущенных; gated-необратимое; леджер; graphify-финал если рождает знание; Run Observatory через abtop --once start/end; CTX>=90 STOP; DAG artifact; artifact lineage).\n' +
-  '3. Протокол_' + sysName + '.md — SSOT (таблица агентов+модели, ворота, граф, скилл/MCP/модель, observability, DAG/replay, lineage, Bernstein-profile если high-stakes).\n' +
-  '4. CLAUDE_' + sysName + '.md — автозапуск + конституция + правило abtop/Graphify: abtop runtime, Graphify durable memory.\n' +
+  'ИМЕНОВАНИЕ ФАЙЛОВ: проект латиницей. Папка агентов agents/ (латиница). Имя файла агента = его name_slug латиницей (напр. agents/lebedev.md, agents/shukhov.md) — БЕЗ замены S→Z. Дисплей-имя системы для текста внутри: "' + sysName + '" (можно кириллицей); slug проекта: ' + sysSlug + '.\n' +
+  'Создай систему "' + sysName + '" в папке ' + targetDir + '/ (mkdir -p ' + targetDir + '/agents). Напиши РАБОЧИЕ файлы:\n' +
+  '1. agents/<name_slug>.md — души по формату (личность+метафора+Делает/Не-делает/Характер+правила+модель/скиллы/MCP), персоны из РОЛЕЙ. ОРКЕСТРАТОР системы = Артемий Лебедев (основатель Студии Артемия Лебедева, дизайнер) — его душа пишется ПОД ДИЗАЙН-ОРКЕСТРАЦИЮ (бескомпромиссный вкус, ководство, «дизайнер должен», прямота), файл agents/lebedev.md. НЕ путать с Сергеем Лебедевым (ЭВМ) из фабрики Зевс.\n' +
+  '2. ' + sysSlug + '-pipeline.js — workflow с ДЕТЕРМИНИРОВАННЫМИ воротами (args парсить typeof-string; ворота = JS-сверка списков не суждение; форс пропущенных; gated-необратимое; леджер; graphify-финал если рождает знание; Run Observatory через abtop --once start/end; CTX>=90 STOP; DAG artifact; artifact lineage). НЕ использовать new Date()/Date.now() — runtime запрещает; RUN_ID = дет.хэш args, метки времени через bash date -u. НЕ ссылаться на `meta` в теле (meta — только экспорт-литерал, в рантайме undefined); список фаз/стадий инлайнить массивом-литералом, не meta.phases.map.\n' +
+  '3. PROTOCOL-' + sysSlug + '.md — SSOT (таблица агентов+модели, ворота, граф, скилл/MCP/модель, observability, DAG/replay, lineage, Bernstein-profile если high-stakes).\n' +
+  '4. CLAUDE.md (в папке системы) — автозапуск + конституция + правило abtop/Graphify: abtop runtime, Graphify durable memory.\n' +
   '5. runs/' + RUN_ID + '-plan.dag.json уже создан; добавь ссылку на него в протокол. Для файлов новой системы добавляй metadata/ledger: generated_by, run_id, prompt_sha/inputs, phase, model.\n' +
   'Используй Write/Bash. Верни JSON: { "system_dir", "files_written":[пути] }',
   { label: 'build', phase: 'Build', agentType: 'general-purpose', model: 'opus', schema: {
